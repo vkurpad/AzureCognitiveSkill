@@ -34,8 +34,10 @@ namespace CognitiveSkill
             WebApiResponseRecord output = new WebApiResponseRecord();
             output.RecordId = requestRecords.First().RecordId;
             output.Data["PII"] = mod.PII;
-
-            return req.CreateResponse(HttpStatusCode.OK, output);
+            WebApiSkillResponse resp = new WebApiSkillResponse();
+            resp.Values = new List<WebApiResponseRecord>();
+            resp.Values.Add(output);
+            return req.CreateResponse(HttpStatusCode.OK, resp);
         }
         static async Task<string> MakeRequest(string input)
         {
