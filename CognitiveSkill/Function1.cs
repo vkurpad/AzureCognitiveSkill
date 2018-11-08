@@ -18,26 +18,41 @@ namespace CognitiveSkill
         [FunctionName("ContentModerator")]
         public static async Task<HttpResponseMessage> Run([HttpTrigger(AuthorizationLevel.Function,"post", Route = null)]HttpRequestMessage req, TraceWriter log, ExecutionContext executionContext)
         {
-            log.Info("C# HTTP trigger function processed a request.");
-            string skillName = executionContext.FunctionName;
 
-            IEnumerable<WebApiRequestRecord> requestRecords = WebApiSkillHelpers.GetRequestRecords(req);
-            if (requestRecords == null)
+            try
+            {
+                log.Info("C# HTTP trigger function processed a request.");
+
+                string skillName = executionContext.FunctionName;
+
+                IEnumerable<WebApiRequestRecord> requestRecords = WebApiSkillHelpers.GetRequestRecords(req);
+                if (requestRecords == null)
+                {
+
+                    return req.CreateErrorResponse(HttpStatusCode.BadRequest, $"{skillName} - Invalid request record array.");
+                }
+                log.Info($"Content Moderator : {requestRecords.ToString()}");
+                dynamic obj = requestRecords.First().Data.First().Value;
+                log.Info($"Content Moderator : {obj.ToString()}");
+
+                string val = await MakeRequest(obj);
+                ContentModerator mod = JsonConvert.DeserializeObject<ContentModerator>(val);
+                WebApiResponseRecord output = new WebApiResponseRecord();
+                output.RecordId = requestRecords.First().RecordId;
+                if (mod.PII.Email.Length > 0)
+                    output.Data["PII"] = mod.PII.Email.FirstOrDefault().Detected;
+                else output.Data["PII"] = null;
+                WebApiSkillResponse resp = new WebApiSkillResponse();
+                resp.Values = new List<WebApiResponseRecord>();
+                resp.Values.Add(output);
+                return req.CreateResponse(HttpStatusCode.OK, resp);
+            }
+            catch (System.Exception ex)
             {
 
-                return req.CreateErrorResponse(HttpStatusCode.BadRequest, $"{skillName} - Invalid request record array.");
+                log.Info(ex.StackTrace);
             }
-            dynamic obj = requestRecords.First().Data.First().Value;
-
-            string val = await MakeRequest(obj);
-            ContentModerator mod = JsonConvert.DeserializeObject<ContentModerator>(val);
-            WebApiResponseRecord output = new WebApiResponseRecord();
-            output.RecordId = requestRecords.First().RecordId;
-            output.Data["PII"] = mod.PII;
-            WebApiSkillResponse resp = new WebApiSkillResponse();
-            resp.Values = new List<WebApiResponseRecord>();
-            resp.Values.Add(output);
-            return req.CreateResponse(HttpStatusCode.OK, resp);
+            return null;
         }
         static async Task<string> MakeRequest(string input)
         {
@@ -47,7 +62,7 @@ namespace CognitiveSkill
             var uriPrefix = "https://southcentralus.api.cognitive.microsoft.com/contentmoderator";
             var uriSuffix = "/moderate/v1.0/ProcessText/Screen?autocorrect=false&PII=true&classify=false&language=eng";
             
-            client.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", "<Your Key Here>");
+            client.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", "0473f3c8a170415aa2897f24b7509fba");
 
             
             client.DefaultRequestHeaders.Add("Host", "southcentralus.api.cognitive.microsoft.com");
