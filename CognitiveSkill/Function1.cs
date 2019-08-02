@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -9,166 +10,165 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.CognitiveSearch.WebApiSkills;
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 
 namespace CognitiveSkill
 {
     public static class Function1
     {
-        [FunctionName("ContentModerator")]
-        public static async Task<HttpResponseMessage> Run([HttpTrigger(AuthorizationLevel.Function,"post", Route = null)]HttpRequestMessage req, TraceWriter log, ExecutionContext executionContext)
+        public static string BingMapsKey = "<BING MAPS API KEY>";
+        [FunctionName("ReviewDataCleanup")]
+        public static async Task<HttpResponseMessage> Run([HttpTrigger(AuthorizationLevel.Function, "post", Route = null)]HttpRequestMessage req, TraceWriter log, ILogger logger, ExecutionContext executionContext)
         {
+            
+            string skillName = executionContext.FunctionName;
+            IEnumerable<WebApiRequestRecord> requestRecords = WebApiSkillHelpers.GetRequestRecords(req);
+            if (requestRecords == null)
+            {
 
+                return req.CreateErrorResponse(HttpStatusCode.BadRequest, $"{skillName} - Invalid request record array.");
+            }
+            WebApiSkillResponse resp = new WebApiSkillResponse();
+            resp.Values = new List<WebApiResponseRecord>();
+            foreach (WebApiRequestRecord reqRec in requestRecords) {
+                double lat = Convert.ToDouble(reqRec.Data["latitude"]);
+                double lng = Convert.ToDouble(reqRec.Data["longitude"]);
+                double review = Convert.ToDouble(reqRec.Data["reviews_rating"]);
+                string language = (string)reqRec.Data["language"];
+                WebApiResponseRecord output = new WebApiResponseRecord();
+                try
+                {
+                  
+                    if (review > 5)
+                        review = review / 2;
+
+                    Address addr = await reverseGeocode(lat, lng, logger);
+                    if (addr != null)
+                    {
+                        output.Data["state"] = addr.adminDistrict;
+                        output.Data["country"] = addr.countryRegion;
+                    }
+                    else
+                    {
+                        output.Data["state"] = "UNKNOWN";
+                        output.Data["country"] = "UNKNOWN";
+                    }
+
+                    output.RecordId = reqRec.RecordId;
+
+                    output.Data["reviews_rating"] = review;
+
+                    
+                    resp.Values.Add(output);
+                    
+                }
+                catch (System.Exception ex)
+                {
+                    log.Info($"EXCEPTION !!!! {ex.Message}");
+                    log.Info(ex.StackTrace);
+                    output.RecordId = reqRec.RecordId;
+                    //output.Errors = new List<WebApiErrorWarningContract>();
+                    //output.Errors.Add(new WebApiErrorWarningContract() { Message = ex.Message });
+                    output.Data["state"] = "UNKNOWN";
+                    output.Data["country"] = "UNKNOWN";
+                    output.Data["reviews_rating"] = review;
+                    
+                    resp.Values.Add(output);
+
+                    return req.CreateResponse(HttpStatusCode.OK, resp);
+                }
+            }
+
+
+
+            log.Info($"Successful Run  returning {resp.Values.Count} records");
+            return req.CreateResponse(HttpStatusCode.OK, resp);
+        }
+        
+        static async Task<Address> reverseGeocode(double lat, double lng, ILogger logger)
+        {
+            HttpClient client = new HttpClient();
+            string uri = $"http://dev.virtualearth.net/REST/v1/Locations/{lat},{lng}?key={BingMapsKey}";
+
+            HttpResponseMessage response = await client.GetAsync(uri);
+            response.EnsureSuccessStatusCode();
+            string responseBody = await response.Content.ReadAsStringAsync();
+            // Above three lines can be replaced with new helper method below
+            // string responseBody = await client.GetStringAsync(uri);
+            Address addr = null;
             try
             {
-                log.Info("C# HTTP trigger function processed a request.");
-
-                string skillName = executionContext.FunctionName;
-
-                IEnumerable<WebApiRequestRecord> requestRecords = WebApiSkillHelpers.GetRequestRecords(req);
-                if (requestRecords == null)
-                {
-
-                    return req.CreateErrorResponse(HttpStatusCode.BadRequest, $"{skillName} - Invalid request record array.");
-                }
-                log.Info($"Content Moderator : {requestRecords.ToString()}");
-                dynamic obj = requestRecords.First().Data.First().Value;
-                log.Info($"Content Moderator : {obj.ToString()}");
-
-                string val = await MakeRequest(obj);
-                ContentModerator mod = JsonConvert.DeserializeObject<ContentModerator>(val);
-                WebApiResponseRecord output = new WebApiResponseRecord();
-                output.RecordId = requestRecords.First().RecordId;
-                if (mod.PII.Email.Length > 0)
-                    output.Data["PII"] = mod.PII.Email.FirstOrDefault().Detected;
-                else output.Data["PII"] = null;
-                WebApiSkillResponse resp = new WebApiSkillResponse();
-                resp.Values = new List<WebApiResponseRecord>();
-                resp.Values.Add(output);
-                return req.CreateResponse(HttpStatusCode.OK, resp);
+                BingMapsResponse bingResp = JsonConvert.DeserializeObject<BingMapsResponse>(responseBody);
+                addr = bingResp.resourceSets.First().resources.First().address;
             }
-            catch (System.Exception ex)
+            catch(Exception ex)
             {
-
-                log.Info(ex.StackTrace);
+                logger.LogInformation("Exception Url={uri} ", uri);
+                logger.LogInformation("Exception Response={responseBody} ", responseBody);
             }
-            return null;
-        }
-        static async Task<string> MakeRequest(string input)
-        {
-            var client = new HttpClient();
-
-            //URL of the Moderator API. Fix the Prefix with your URL, what can be found in the Azure Portal.
-            var uriPrefix = "https://southcentralus.api.cognitive.microsoft.com/contentmoderator";
-            var uriSuffix = "/moderate/v1.0/ProcessText/Screen?autocorrect=false&PII=true&classify=false&language=eng";
             
-            client.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", "0473f3c8a170415aa2897f24b7509fba");
-
-            
-            client.DefaultRequestHeaders.Add("Host", "southcentralus.api.cognitive.microsoft.com");
-
-
-            var uri = uriPrefix + uriSuffix;
-
-            HttpResponseMessage response;
-            byte[] byteData = Encoding.UTF8.GetBytes(input);
-            using (var content = new ByteArrayContent(byteData))
-            {
-                content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
-                response = await client.PostAsync(uri, content);
-            }
-            return await response.Content.ReadAsStringAsync();
-
+            return addr;
         }
     }
 
-
-    public class ContentModerator
+    public class BingMapsResponse
     {
-        public string OriginalText { get; set; }
-        public string NormalizedText { get; set; }
-        public string AutoCorrectedText { get; set; }
-        public object Misrepresentation { get; set; }
-        public Classification Classification { get; set; }
-        public Status Status { get; set; }
-        public PII PII { get; set; }
-        public string Language { get; set; }
-        public Terms[] Terms { get; set; }
-        public string TrackingId { get; set; }
+        public string authenticationResultCode { get; set; }
+        public string brandLogoUri { get; set; }
+        public string copyright { get; set; }
+        public Resourceset[] resourceSets { get; set; }
+        public int statusCode { get; set; }
+        public string statusDescription { get; set; }
+        public string traceId { get; set; }
     }
 
-    public class Classification
+    public class Resourceset
     {
-        public Category1 Category1 { get; set; }
-        public Category2 Category2 { get; set; }
-        public Category3 Category3 { get; set; }
-        public bool ReviewRecommended { get; set; }
+        public int estimatedTotal { get; set; }
+        public Resource[] resources { get; set; }
     }
 
-    public class Category1
+    public class Resource
     {
-        public float Score { get; set; }
+        public string __type { get; set; }
+        public float[] bbox { get; set; }
+        public string name { get; set; }
+        public Point point { get; set; }
+        public Address address { get; set; }
+        public string confidence { get; set; }
+        public string entityType { get; set; }
+        public Geocodepoint[] geocodePoints { get; set; }
+        public string[] matchCodes { get; set; }
     }
 
-    public class Category2
+    public class Point
     {
-        public float Score { get; set; }
-    }
-
-    public class Category3
-    {
-        public float Score { get; set; }
-    }
-
-    public class Status
-    {
-        public int Code { get; set; }
-        public string Description { get; set; }
-        public object Exception { get; set; }
-    }
-
-    public class PII
-    {
-        public Email[] Email { get; set; }
-        public IPA[] IPA { get; set; }
-        public Phone[] Phone { get; set; }
-        public Address[] Address { get; set; }
-    }
-
-    public class Email
-    {
-        public string Detected { get; set; }
-        public string SubType { get; set; }
-        public string Text { get; set; }
-        public int Index { get; set; }
-    }
-
-    public class IPA
-    {
-        public string SubType { get; set; }
-        public string Text { get; set; }
-        public int Index { get; set; }
-    }
-
-    public class Phone
-    {
-        public string CountryCode { get; set; }
-        public string Text { get; set; }
-        public int Index { get; set; }
+        public string type { get; set; }
+        public float[] coordinates { get; set; }
     }
 
     public class Address
     {
-        public string Text { get; set; }
-        public int Index { get; set; }
+        public string addressLine { get; set; }
+        public string adminDistrict { get; set; }
+        public string adminDistrict2 { get; set; }
+        public string countryRegion { get; set; }
+        public string formattedAddress { get; set; }
+        public string locality { get; set; }
+        public string postalCode { get; set; }
     }
 
-    public class Terms
+    public class Geocodepoint
     {
-        public int Index { get; set; }
-        public int OriginalIndex { get; set; }
-        public int ListId { get; set; }
-        public string Term { get; set; }
+        public string type { get; set; }
+        public float[] coordinates { get; set; }
+        public string calculationMethod { get; set; }
+        public string[] usageTypes { get; set; }
     }
 
+    
+
+    
+   
 }
